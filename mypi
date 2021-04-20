@@ -1,0 +1,20 @@
+#
+# Configuration for mypi host
+#
+PI_HOSTNAME="smartypi"
+PI_USERNAME="notpi"
+
+# Configure SSH Daemon
+SSHD="yes"
+
+# Configure WIFI from file
+WIFI="wpa_supplicant.conf"
+
+# Add current user ~/.ssh/id_rsa.pub to authorized_keys for PI_USERNAME and root.
+AUTH_KEYS="yes"
+
+# Add VE3YSH Repository to system.
+AUTH_REPO="yes"
+
+# Set the system time zone see /usr/share/zoneinfo
+PI_TIME_ZONE="America/Toronto"

@@ -1,0 +1,138 @@
+#!/bin/bash
+PI_USERUID=1000
+LOGNAME_USER=$(logname)
+MOUNT="/media/${LOGNAME_USER}"
+BOOT_DIR="${MOUNT}/boot"
+ROOT_DIR="${MOUNT}/rootfs"
+CONFIG_DIR=$(dirname $0)
+SCRIPT=$0
+
+if [ $# -lt 1 ]; then
+	echo "Usage: ${SCRIPT} <pi_config_file>"
+	exit 2
+fi
+
+CONFIG_FILE=$1
+if [ ! -f ${CONFIG_DIR}/${CONFIG_FILE} ]; then
+	echo "${CONFIG_DIR}/${CONFIG_FILE} does not exist." 
+	exit 1
+else
+	. ${CONFIG_DIR}/${CONFIG_FILE}
+fi
+
+echo "Configuring Raspberry Pi SDCard with configuration from:"
+echo "   - ${CONFIG_DIR}/${CONFIG_FILE}"
+echo "   - As user ${LOGNAME_USER}"
+echo "   - Some commands may require this script to be run as root."
+echo
+
+if [ ! -d ${BOOT_DIR} ]; then
+	echo "Boot directory ${BOOT_DIR} not found, mount SDCard."
+	exit 3
+fi
+
+if [ ! -d ${ROOT_DIR} ]; then
+	echo "Root directory ${ROOT_DIR} not found, mount SDCard."
+	exit 3
+fi
+
+if [ "${SSHD}" = "yes" ]; then
+	echo "Enable SSHD"
+	touch ${MOUNT}/boot/ssh
+fi
+
+if [ ! -z "${WIFI}" ]; then
+	echo "Enable Wifi from ${CONFIG_DIR}/${WIFI}"
+	cp ${CONFIG_DIR}/${WIFI} ${BOOT_DIR}/wpa_supplicant.conf
+fi
+
+if [ ! -z "${PI_HOSTNAME}" ]; then
+	echo "Setting hostname to ${PI_HOSTNAME} in ${ROOT_DIR}/etc/hostname and ${ROOT_DIR}/etc/hosts"
+	echo "${PI_HOSTNAME}" > ${ROOT_DIR}/etc/hostname
+
+	cat << EOF > ${ROOT_DIR}/etc/hosts
+127.0.0.1	localhost
+::1		localhost ip6-localhost ip6-loopback
+ff02::1		ip6-allnodes
+ff02::2		ip6-allrouters
+
+127.0.1.1	${PI_HOSTNAME}
+EOF
+fi
+
+if [ ! -z "${PI_USERNAME}" ]; then
+	if [ "${PI_USERNAME}" != "pi" ]; then
+		echo "Change username pi to ${PI_USERNAME}"
+		echo "   ${ROOT_DIR}/etc/group"
+		cp ${ROOT_DIR}/etc/group ${ROOT_DIR}/etc/group.old
+		sed -e "s/^pi:/${PI_USERNAME}:/" < ${ROOT_DIR}/etc/group.old | \
+			sed -e "s/:pi/:${PI_USERNAME}/" | \
+			sed -e "s/,pi/,${PI_USERNAME}/" > ${ROOT_DIR}/etc/group
+
+		echo "   ${ROOT_DIR}/etc/passwd"
+		cp ${ROOT_DIR}/etc/passwd ${ROOT_DIR}/etc/passwd.old
+		sed -e "s/^pi:/${PI_USERNAME}:/" < ${ROOT_DIR}/etc/passwd.old | \
+			sed -e "s/\/pi:/\/${PI_USERNAME}:/" > ${ROOT_DIR}/etc/passwd
+
+		echo "   ${ROOT_DIR}/etc/shadow"
+		cp ${ROOT_DIR}/etc/shadow ${ROOT_DIR}/etc/shadow.old
+		sed -e "s/^pi:/${PI_USERNAME}:/" < ${ROOT_DIR}/etc/shadow.old > ${ROOT_DIR}/etc/shadow
+
+		echo "   ${ROOT_DIR}/home/pi"
+		if [ -d ${ROOT_DIR}/home/pi ]
+		then
+			mv ${ROOT_DIR}/home/pi ${ROOT_DIR}/home/${PI_USERNAME}
+		fi
+
+		echo "   ${ROOT_DIR}/etc/sudoers.d/010_pi-nopasswd"
+		cp ${ROOT_DIR}/etc/sudoers.d/010_pi-nopasswd ${ROOT_DIR}/etc/sudoers.d/010_pi-nopasswd.old
+		sed -e s/^pi/${PI_USERNAME}/ ${ROOT_DIR}/etc/sudoers.d/010_pi-nopasswd.old > \
+			${ROOT_DIR}/etc/sudoers.d/010_pi-nopasswd
+
+		rm ${ROOT_DIR}/etc/group.old \
+			${ROOT_DIR}/etc/passwd.old \
+			${ROOT_DIR}/etc/shadow.old \
+			${ROOT_DIR}/etc/sudoers.d/010_pi-nopasswd.old
+
+		# Copy ssh credentials for continuity. Assumes tar file exists in the working directory.
+		if [ -f ${CONFIG_DIR}/${CONFIG_FILE}_${PI_USERNAME}.ssh.tgz ]; then
+			echo "Extracting ${CONFIG_DIR}/${CONFIG_FILE}_${PI_USERNAME}.ssh.tgz to ${ROOT_DIR}/home/${PI_USERNAME}"
+			tar -xzf ${CONFIG_DIR}/${CONFIG_FILE}_${PI_USERNAME}.ssh.tgz -C ${ROOT_DIR}/home/${PI_USERNAME}
+		fi
+	fi
+
+	# Add current user public ssh key as authorized if it exists.
+	if [ "${AUTH_KEYS}" = "yes" ]; then
+		if [ -f /home/${LOGNAME_USER}/.ssh/id_rsa.pub ]; then
+			echo "Setting ${LOGNAME_USER} SSH key as authorized on Pi ${PI_USERNAME} and root."
+			# Add to USERNAME user
+			mkdir --parents ${ROOT_DIR}/home/${PI_USERNAME}/.ssh
+			cat /home/${LOGNAME_USER}/.ssh/id_rsa.pub >> ${ROOT_DIR}/home/${PI_USERNAME}/.ssh/authorized_keys
+			chmod 700 ${ROOT_DIR}/home/${PI_USERNAME}/.ssh
+			chmod 600 ${ROOT_DIR}/home/${PI_USERNAME}/.ssh/authorized_keys
+			chown -R ${PI_USERUID} ${ROOT_DIR}/home/${PI_USERNAME}/.ssh
+
+			# Add to ROOT user.
+			mkdir --parents ${ROOT_DIR}/root/.ssh
+			cat /home/${LOGNAME_USER}/.ssh/id_rsa.pub >> ${ROOT_DIR}/root/.ssh/authorized_keys
+			chmod 700 ${ROOT_DIR}/root/.ssh
+			chmod 600 ${ROOT_DIR}/root/.ssh/authorized_keys
+			chown -R 0 ${ROOT_DIR}/root/.ssh
+		fi
+	fi
+fi
+
+if [ "${AUTH_REPO}" = "yes" ]; then
+	echo "Adding VE3YSH repository."
+	cat << EOF > ${ROOT_DIR}/etc/apt/sources.list.d/ve3ysh.list
+deb [trusted=yes] https://apt.fury.io/ve3ysh/ /
+EOF
+fi
+
+# Set the local time zone for the system.
+if [ ! -z "${PI_TIME_ZONE}" ]; then
+	echo "Set Pi time zone to ${PI_TIME_ZONE}"
+	rm ${ROOT_DIR}/etc/localtime
+	ln -s /usr/share/zoneinfo/${PI_TIME_ZONE} ${ROOT_DIR}/etc/localtime
+fi
+
